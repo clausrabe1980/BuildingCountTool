@@ -3,17 +3,36 @@
 .RData
 .Rproj.user/
 
-# Mac
+# OS
 .DS_Store
+desktop.ini
+Thumbs.db
 
 # Shiny deployment
 rsconnect/
 
-# Reticulate / python envs
+# Python envs
 .venv/
 venv/
 r-reticulate/
 __pycache__/
 
-# Optional: prevent uploading shapefiles/data (recommended)
+# ---- Large data (never commit) ----
+Data/
 data/
+Earth Engine Data/
+Data analysis/
+
+# Data file types, wherever they appear
+*.tif
+*.tiff
+*.geojson
+*.shp
+*.shx
+*.dbf
+*.prj
+*.sbn
+*.sbx
+*.cpg
+*.qmd
+*.rds

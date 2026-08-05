@@ -7,6 +7,7 @@
 # - Keeps Wards / UMN Areas / Draw modes + live size filtering + plots + CSV export
 # ------------------------------------------------------------
 
+
 # install.packages(c(
 #   "shiny",
 #   "leaflet",
@@ -15,8 +16,7 @@
 #   "jsonlite",
 #   "geojsonsf",
 #   "htmlwidgets",
-#   "plotly",
-#   "openxlsx"
+#   "plotly"
 # ))
 
 #install.packages("leaflet.extras")
@@ -32,7 +32,6 @@ library(jsonlite)
 library(geojsonsf)
 library(htmlwidgets)
 library(plotly)
-library(openxlsx)
 
 # ---------------------------
 # Local buildings data paths
@@ -74,7 +73,7 @@ PRES_THRESH <- 0.5
 # ---- local shapefiles ----
 wards_path <- "Data/Wards/Municipal_Wards_2021.shp"
 
-UMN_function_areas_path <- "Data/Regions/UMN_Functional_Areas_7f.shp"
+UMN_function_areas_path <- "Data/Regions/UMN_Functional_Areas_7e.shp"
 
 # app_dir <- normalizePath(getwd(), winslash = "/")  # if you always run app from its folder
 # wards_path <- file.path(app_dir, "Data/Wards/Municipal_Wards_2021.shp")
@@ -145,8 +144,8 @@ ui <- fluidPage(
       tags$div(
         style = "display:flex; align-items:center; justify-content:space-between; gap:10px; margin-bottom:6px;",
         strong(textOutput("roi_area_m2")),
-        downloadButton("download_csv",      "Summary XLSX"),
-        downloadButton("download_full_csv", "Full XLSX")
+        downloadButton("download_csv",      "Summary CSV"),
+        downloadButton("download_full_csv", "Full CSV")
       ),
       
       # --- Size histogram + size range slider (WITH manual min input) ---
@@ -1585,11 +1584,11 @@ server <- function(input, output, session) {
   })
   
   # ---------------------------
-  # Summary XLSX Export — single sheet, annual time-series
+  # Summary CSV Export — original single table (size filter only, no height columns)
   # ---------------------------
   output$download_csv <- downloadHandler(
     filename = function() {
-      paste0("open_buildings_summary_", format(Sys.Date(), "%Y%m%d"), ".xlsx")
+      paste0("open_buildings_summary_", format(Sys.Date(), "%Y%m%d"), ".csv")
     },
     content = function(file) {
       req(rv$roi_sf)
@@ -1621,26 +1620,21 @@ server <- function(input, output, session) {
         "v3_building_count_total_in_roi", "presence_threshold"
       )]
       
-      wb <- openxlsx::createWorkbook()
-      openxlsx::addWorksheet(wb, "Summary")
-      openxlsx::writeData(wb, "Summary", out)
-      openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
+      utils::write.csv(out, file, row.names = FALSE)
     }
   )
   
   # ---------------------------
-  # Full XLSX Export
-  #   Sheet 1 "Buildings"  — all temporal records, no filters
-  #   Sheet 2 "V3_control" — V3 2023 records, no filters
+  # Full CSV Export — one row per building, all years, no filters applied
+  # Columns: unique_id (year_rowindex), year, area_m2, height_m
   # ---------------------------
   output$download_full_csv <- downloadHandler(
     filename = function() {
-      paste0("open_buildings_full_", format(Sys.Date(), "%Y%m%d"), ".xlsx")
+      paste0("open_buildings_full_", format(Sys.Date(), "%Y%m%d"), ".csv")
     },
     content = function(file) {
       req(rv$roi_sf, rv$year_area_list)
       
-      # ---- Sheet 1: temporal building records ----
       yrs <- sort(as.integer(names(rv$year_area_list)))
       
       record_rows <- lapply(yrs, function(y) {
@@ -1650,6 +1644,7 @@ server <- function(input, output, session) {
         a <- if (is.data.frame(df)) df$area_m2 else df
         h <- if (is.data.frame(df)) df$height_m else rep(NA_real_, length(a))
         
+        # Only drop rows with no valid area; height NA is fine
         keep <- is.finite(a) & a > 0
         a <- a[keep]; h <- h[keep]
         if (length(a) == 0) return(NULL)
@@ -1664,61 +1659,17 @@ server <- function(input, output, session) {
       })
       
       record_rows <- Filter(Negate(is.null), record_rows)
-      buildings <- if (length(record_rows) > 0) {
-        do.call(rbind, record_rows)
-      } else {
-        data.frame(unique_id = character(), year = integer(),
-                   area_m2 = numeric(), height_m = numeric())
-      }
-      
-      # ---- Sheet 2: V3 control records ----
-      v3_records <- data.frame(
-        unique_id = character(), year = integer(),
-        area_m2 = numeric(), height_m = numeric(),
-        stringsAsFactors = FALSE
-      )
-      
-      if (!is.null(rv$v3_sf) && nrow(rv$v3_sf) > 0) {
-        v3 <- rv$v3_sf  # area_m2 already added by add_area_m2()
-        
-        a <- v3$area_m2
-        height_col_candidates <- c(
-          "height_mean_m", "height_median_m", "height_p95_m",
-          "height_mean", "height_median", "height_p95",
-          "height", "HEIGHT", "building_height", "BUILDING_HEIGHT",
-          "bldg_height", "BLDG_HEIGHT", "bldg_hgt", "BLDG_HGT",
-          "hgt", "HGT", "height_m", "HEIGHT_M",
-          "roof_height", "ROOF_HEIGHT", "mean_height", "MEAN_HEIGHT",
-          "mean", "median", "p95"
+      if (length(record_rows) == 0) {
+        utils::write.csv(
+          data.frame(unique_id = character(), year = integer(),
+                     area_m2 = numeric(), height_m = numeric()),
+          file, row.names = FALSE
         )
-        hcol <- height_col_candidates[height_col_candidates %in% names(v3)][1]
-        h_vec <- if (!is.na(hcol) && !is.null(hcol)) {
-          suppressWarnings(as.numeric(v3[[hcol]]))
-        } else {
-          rep(NA_real_, nrow(v3))
-        }
-        
-        keep <- is.finite(a) & a > 0
-        a     <- a[keep]
-        h_vec <- h_vec[keep]
-        
-        if (length(a) > 0) {
-          v3_records <- data.frame(
-            unique_id = paste0("V3_2023_", seq_along(a)),
-            year      = 2023L,
-            area_m2   = a,
-            height_m  = h_vec,
-            stringsAsFactors = FALSE
-          )
-        }
+        return()
       }
       
-      wb <- openxlsx::createWorkbook()
-      openxlsx::addWorksheet(wb, "Buildings")
-      openxlsx::writeData(wb, "Buildings", buildings)
-      openxlsx::addWorksheet(wb, "V3_control")
-      openxlsx::writeData(wb, "V3_control", v3_records)
-      openxlsx::saveWorkbook(wb, file, overwrite = TRUE)
+      records <- do.call(rbind, record_rows)
+      utils::write.csv(records, file, row.names = FALSE)
     }
   )
 }

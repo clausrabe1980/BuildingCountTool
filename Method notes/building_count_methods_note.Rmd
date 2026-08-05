@@ -1,0 +1,292 @@
+---
+title: "Building Count Tool — Methods & Data Quality Note"
+subtitle: "Hilton Local Area Plan: Growth & Fiscal Impact Model"
+author: "City Centric"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+output:
+  html_document:
+    theme: flatly
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+  word_document:
+    toc: true
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+```
+
+---
+
+> **Purpose of this note.** This document describes the building count tool developed for the Hilton Local Area Plan. It covers the data sources, processing pipeline, validation findings, known limitations, and data quality issues identified through a formula audit of the analysis workbook. It is intended as a standalone technical annex to the Growth & Fiscal Impact Model, and should be read in conjunction with the Growth Model documentation when that work is complete.
+
+---
+
+# Overview
+
+The building count tool extracts, filters, and aggregates building polygon data for a user-defined region of interest (ROI), producing annual counts and gross floor area (GFA) estimates by building typology for the period 2016 to 2023. These outputs serve as a key empirical input into the Growth & Fiscal Impact Model, grounding the supply-side baseline in observed building stock rather than assumptions.
+
+The tool operates across three components:
+
+1. **R Shiny application** — spatial extraction and interactive exploration
+2. **Building Analysis workbook** — classification rules and aggregation
+3. **Growth Model workbook** — scenario-based projections (documented separately)
+
+This note covers components 1 and 2.
+
+---
+
+# Data Sources
+
+## Google Open Buildings
+
+The tool draws on two datasets from Google's Open Buildings programme, both derived from satellite imagery using machine learning:
+
+**Temporal V1** is the primary source. It provides annual building polygon layers for 2016 through 2023, with each polygon carrying a footprint area (m²) and building height (m). Polygons represent detected building footprints; where attached structures are merged by the detection algorithm, a single polygon may represent multiple dwellings. The data was exported at a presence confidence threshold of 0.50, meaning only polygons with a detection probability of 50% or greater are included. This threshold is fixed upstream in the data export and is not adjustable within the tool.
+
+**V3** is a 2023-only snapshot layer that uses a different, more granular classification method. It tends to detect individual structures rather than merged footprints, and therefore typically yields a higher polygon count than Temporal V1 for the same area. The V3 layer is used within the tool as a calibration reference for 2023 rather than as a primary time-series source.
+
+## Boundary Data
+
+Two administrative boundary layers are loaded at startup to support ROI selection:
+
+- **Municipal Wards** (2021 boundaries)
+- **UMN Functional Areas** — planning sub-areas used as the primary unit of analysis for the Local Area Plan
+
+---
+
+# Processing Pipeline
+
+## Stage 1 — Spatial Extraction (R Shiny Application)
+
+The Shiny application allows the analyst to define a region of interest in one of three ways: by clicking a ward boundary, by clicking a UMN functional area, or by drawing a custom polygon directly on the map.
+
+Once an ROI is defined, the application clips all eight annual Temporal V1 layers and the V3 layer to that boundary using planar geometry operations (EPSG:3857 for area calculations, EPSG:4326 for display). The clipping uses `sf::st_intersection()`, which trims polygons at the ROI boundary rather than simply selecting those whose centroids fall within it.
+
+The application renders two interactive histograms — one for polygon footprint area and one for building height — and provides range sliders for both dimensions. These sliders act as live filters: they control which polygons are displayed on the map, which are counted in the time-series, and which are exported.
+
+A time-series bar chart shows, for each year, the count of buildings and total built area (in m² or K m²) within the filtered range. The V3 count for 2023 is overlaid as a reference point.
+
+Two export formats are available:
+
+- **Summary XLSX** — annual aggregates (count, built area, % cover) with ROI metadata
+- **Full XLSX** — one record per building polygon, with `unique_id`, `year`, `area_m2`, and `height_m` fields, across two sheets (`Buildings` and `V3_control`)
+
+The Full XLSX export is the output that feeds the Building Analysis workbook.
+
+### Notes on the export format
+
+The `unique_id` field is generated sequentially at export time in the format `{year}_{sequence}`. These identifiers are not stable across separate export sessions — if the same ROI is exported twice, the sequence numbers will differ. For the current workflow this is not an issue, but any future process that joins back to source records should be aware of this.
+
+Building height is extracted from the GeoJSON using a candidate-column search across a priority list (`height_mean_m`, `height_median_m`, `height_p95_m`, and several fallbacks). No log is written indicating which column was selected. If none of the candidate columns are present, height is recorded as `NA`.
+
+---
+
+## Stage 2 — Classification and Aggregation (Building Analysis Workbook)
+
+The Building Analysis workbook (`Building_count_analysis_4.xlsx`) applies classification rules to the raw polygon data and produces annual dwelling counts and GFA estimates by footprint size category.
+
+### Sheet structure
+
+The workbook contains eleven sheets organised into four functional layers:
+
+| Sheet | Role |
+|---|---|
+| `Buildings` | Raw temporal polygon data (22,462 records, 2016–2023) |
+| `V3_control` | V3 2023 reference polygons |
+| `GFA Calculation` | Computes estimated storeys and GFA per polygon |
+| `Buildings by Footprint` | Counts polygons by footprint size bin, by year |
+| `Buildings by Height` | Counts polygons by height bin, by year |
+| `Buildings by GFA` | Counts and sums GFA by footprint size bin, by year |
+| `Summary Statistics` | Descriptive statistics by year (footprint and height) |
+| `2023 V3 Comparison` | Cross-tabulation of Temporal V1 vs V3 for 2023 |
+| `Dwelling Estimation` | Estimates semi-detached dwellings in merged polygons |
+| `Dwelling Output` | Final dwelling counts and GFA by typology, by year |
+| `Charts` | Data tables feeding chart objects |
+
+### Classification rules
+
+Building polygons are classified into four footprint size bins, defined by four configurable thresholds on the `Buildings by Footprint` sheet:
+
+| Bin | Footprint range | Interpretation |
+|---|---|---|
+| 1 | < 150 m² | Ancillary structures (garages, outhouses) — excluded from dwelling counts |
+| 2 | 150–350 m² | Small dwellings — direct count |
+| 3 | 350–700 m² | Medium dwellings — direct count |
+| 4 | 700–1,000 m² | Large dwellings — direct count |
+| 5 | > 1,000 m² | Very large / likely non-residential |
+
+All thresholds are parameterised and can be adjusted without editing formulas.
+
+### GFA estimation
+
+GFA is estimated from footprint area and building height using a fixed assumed storey height of 3.0 m (configurable in `GFA Calculation!B3`). The number of storeys for each polygon is computed as:
+
+```
+est_storeys = MAX(1, FLOOR(height_m / 3.0, 1))
+gfa_m2 = area_m2 × est_storeys
+```
+
+Buildings with missing or zero height values are assigned one storey by the `MAX(1, ...)` guard. This is a known conservative assumption — see Section 5.
+
+### Semi-detached dwelling estimation
+
+The Temporal V1 layer merges attached structures into single polygons. To recover an estimated count of semi-detached dwellings hidden within large merged polygons, the workbook applies a division method: polygons falling within a defined footprint band (1,000–3,000 m²) are divided by an assumed average dwelling footprint of 200 m², yielding an estimated dwelling count per polygon.
+
+The 200 m² average is derived from the mean footprint of V3 structures in the 100–200 m² range for 2023, and is used as a proxy for the typical semi-detached dwelling size. This method is described further in Section 4.
+
+---
+
+# Validation
+
+## Aerial Photography Validation Exercise
+
+A model validation exercise was conducted by comparing the tool's building count outputs against manual counts from aerial photography across a sample of sub-areas, covering different residential contexts.
+
+**Results:**
+
+- In predominantly **middle to high income, freestanding residential** contexts, the classification rules produced results within **±10% of the aerial photography count**. This is considered an acceptable accuracy level for planning modelling purposes.
+- In areas with significant **semi-detached or attached housing stock**, accuracy was substantially lower. The polygon merging behaviour of the Temporal V1 layer means that rows of semi-detached houses are frequently detected as single large polygons, and the fixed-divisor estimation method does not reliably recover the true dwelling count.
+
+## Scope of Reliable Application
+
+Based on the validation exercise, the tool's outputs should be treated as follows:
+
+**Reliable (±10%):** Predominantly non-urban, non-dense residential contexts where freestanding structures dominate and polygon merging is rare.
+
+**Indicative only:** Denser or more urban contexts with significant semi-detached or attached housing stock. In these contexts the tool will systematically **undercount** dwellings, because merged polygons are either treated as single structures or divided by a fixed average that may not reflect local conditions.
+
+This scope condition is relevant to how the building count outputs are weighted when they feed into the Growth Model. Sub-areas that fall outside the reliable domain should be flagged accordingly, and their baseline counts treated as lower bounds rather than point estimates.
+
+---
+
+# Known Limitations
+
+## Semi-detached Estimation Method
+
+The current semi-detached estimation relies on a single hardcoded average divisor (200 m²). A more robust approach would use a **bootstrap calibration method**: comparing observed additional structures identified as semi-detached against building plan completion records for townhouses over the same 2016–2023 period, and deriving an area-specific correction factor. This is planned as a methodological improvement and would replace the fixed divisor in `Dwelling Estimation!B6`.
+
+## Building Height and GFA
+
+Buildings with missing height data — whether because the GeoJSON lacked a height field or because the detection model did not produce a reliable height estimate — are assigned a single storey by default. For the sub-areas under study, this conservative treatment is likely to understate GFA for any multi-storey structures that lack height data.
+
+## Presence Threshold
+
+The 0.5 presence confidence threshold is applied during the Google Open Buildings export, upstream of any processing within this tool. It is not adjustable within the Shiny application. The effect of this threshold is to exclude lower-confidence detections; raising it would reduce false positives but would also reduce the total polygon count. The threshold is recorded in all exports as metadata.
+
+## No Area Disaggregation within ROI
+
+The tool produces aggregate counts for the entire ROI. There is no automatic disaggregation by sub-area within a single export run. Analysis at the UMN functional area level requires separate export runs per area.
+
+---
+
+# Data Quality Findings — Building Analysis Workbook
+
+A formula audit of the Building Analysis workbook identified the following issues. They are grouped by severity.
+
+## Formula Errors
+
+### Unit mismatch — `Dwelling Output`, row 29 (GFA section)
+
+**Location:** `Dwelling Output`, row 29, cells B29:I29
+
+**Formula:** `='Buildings by GFA'!B45 - 'Dwelling Estimation'!B13`
+
+**Issue:** This formula subtracts `Dwelling Estimation!B13`, which holds the total **footprint area** (m²) of polygons in the multi-dwelling band, from `Buildings by GFA!B45`, which holds total **GFA** (m²) for the "very large" footprint bin. These are different physical quantities — footprint area and GFA are not directly comparable, particularly for multi-storey structures. The subtraction produces a meaningless result.
+
+**Likely intent:** The formula appears to attempt removal of the multi-dwelling polygon GFA from the "very large" bin to avoid double-counting with the semi-detached estimated row. The correct approach would be to subtract the GFA equivalent (i.e., `Dwelling Estimation!B13 × estimated storeys`), or to restructure the bin definitions so the bands do not overlap.
+
+**Risk:** The GFA subtotals in the `Dwelling Output` GFA section are incorrect for every year. This flows downstream into any Growth Model sheet that consumes these GFA values.
+
+**Action required:** Review the intent of this formula and correct either the source reference or the underlying bin logic.
+
+---
+
+### Incorrect label — `Dwelling Output`, row 30 (GFA section)
+
+**Location:** `Dwelling Output`, cell A30
+
+**Label:** `"Total Dwellings"`
+
+**Issue:** Row 30 sums the GFA values in rows 25–29 (m²). The label "Total Dwellings" is incorrect — this row contains total GFA, not a dwelling count.
+
+**Risk:** Low risk to calculations, but creates a material misreading risk for any team member interpreting the sheet.
+
+**Action required:** Change the label to `"Total GFA (m²)"`.
+
+---
+
+## Classification and Documentation Issues
+
+### Inconsistent semi-detached band definitions
+
+**Location:** Three sheets define the semi-detached/attached footprint band differently:
+
+| Sheet | Band definition | Context |
+|---|---|---|
+| `Dwelling Output` (rows 6–7) | 100–150 m² | Labelled "semi-detached" |
+| `Buildings by Footprint` (T1 threshold) | < 150 m² | Labelled "ancillary" |
+| `Dwelling Estimation` (rows 6–8) | 100–200 m² | Used for V3 calibration |
+
+**Issue:** The 100–150 m² range is simultaneously classified as "semi-detached" (in `Dwelling Output`) and "ancillary" (in `Buildings by Footprint`). The V3 calibration uses a wider 100–200 m² band. These three definitions are inconsistent and cannot all be correct simultaneously.
+
+**Risk:** The estimated semi-detached count in `Dwelling Output` row 14 may be based on an incorrectly bounded population of structures.
+
+**Action required:** Agree on a single band definition and align all three sheets. This decision should also be documented in the assumptions register, as it directly affects the semi-detached dwelling count.
+
+---
+
+### Stale cross-reference in `Buildings by GFA` header
+
+**Location:** `Buildings by GFA`, cell A2
+
+**Current text:** `"GFA calculated using 3.0 m assumed storey height (change in data sheet cell H1)"`
+
+**Issue:** The instruction refers to "data sheet cell H1", which does not exist. The storey height parameter is located at `GFA Calculation!B3`.
+
+**Risk:** Low risk to calculations. Risk is to maintenance — a team member following this instruction will not find the referenced cell.
+
+**Action required:** Update the note to read: `"Change assumed storey height in GFA Calculation sheet, cell B3."`
+
+---
+
+## Performance and Hygiene
+
+### Oversized `GFA Calculation` sheet
+
+**Location:** `GFA Calculation`
+
+**Issue:** The sheet contains approximately 100,000 formula rows, against a `Buildings` source of 22,462 records. The excess rows contain guard formulas (`IF(ISNUMBER(FIND("_", A)), ...)`) that return empty strings for rows beyond the data range, so no calculation errors result. However, the ~78,000 surplus rows add unnecessary file weight and slow workbook recalculation.
+
+**Action required:** Trim the sheet to the `Buildings` row count plus a modest buffer (e.g., 500 rows) to accommodate data updates.
+
+---
+
+# Summary of Findings
+
+| # | Location | Severity | Issue | Action |
+|---|---|---|---|---|
+| 1 | `Dwelling Output` row 29 | **High** | Unit mismatch: footprint area subtracted from GFA | Review intent and correct formula or bin structure |
+| 2 | `Dwelling Output` row 30 | **Medium** | Label reads "Total Dwellings" but sums GFA (m²) | Change label to "Total GFA (m²)" |
+| 3 | Three sheets | **Medium** | Semi-detached band defined inconsistently (100–150, <150, 100–200 m²) | Align to single agreed definition |
+| 4 | `Buildings by GFA` cell A2 | **Low** | Header references non-existent cell H1 for storey height parameter | Update note to reference `GFA Calculation!B3` |
+| 5 | `GFA Calculation` | **Low** | Sheet over-extended to ~100,000 rows (22,462 used) | Trim to data extent + buffer |
+
+---
+
+# Recommendations
+
+1. **Resolve the unit mismatch (Finding 1) before the GFA outputs are used downstream.** Until this is corrected, the GFA values in `Dwelling Output` rows 25–29 should be treated as unreliable.
+
+2. **Agree and document the semi-detached band definition.** This is both a data quality issue and a methodological decision that affects the headline dwelling count. It should be resolved in consultation with the team before outputs are cited in planning documents.
+
+3. **Plan for bootstrap calibration of the semi-detached factor.** Comparing observed semi-detached identifications against building plan completions for townhouses over the 2016–2023 period would replace the fixed 200 m² divisor with a calibrated factor, improving reliability in denser sub-areas.
+
+4. **Apply the scope condition consistently in the Growth Model.** Sub-areas that fall outside the ±10% reliable domain (i.e., denser areas with significant attached housing) should have their baseline building counts treated as indicative lower bounds. This should be reflected in the Growth Model's scenario assumptions.
+
+---
+
+*Document prepared by City Centric. For internal use.*
