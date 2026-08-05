@@ -21,7 +21,6 @@ __pycache__/
 Data/
 data/
 Earth Engine Data/
-Data analysis/
 
 # Data file types, wherever they appear
 *.tif
