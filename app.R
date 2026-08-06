@@ -357,9 +357,13 @@ server <- function(input, output, session) {
     sf::st_make_valid(out)
   }
   
-  read_geojson_safe <- function(path) {
+  read_geojson_safe <- function(path, wkt = NULL) {
     tryCatch({
-      x <- sf::st_read(path, quiet = TRUE)
+      x <- if (is.null(wkt)) {
+        sf::st_read(path, quiet = TRUE)
+      } else {
+        sf::st_read(path, wkt_filter = wkt, quiet = TRUE)
+      }
       x <- sf::st_zm(x, drop = TRUE, what = "ZM")
       x <- sf::st_make_valid(x)
       if (is.na(sf::st_crs(x))) sf::st_crs(x) <- 4326
@@ -370,17 +374,36 @@ server <- function(input, output, session) {
     })
   }
   
+  # ROI bounding box as WKT, for GDAL's spatial-index pre-filter
+  roi_wkt_filter <- function(roi_sf) {
+    if (is.null(roi_sf) || nrow(roi_sf) == 0) return(NULL)
+    bb <- tryCatch(sf::st_bbox(sf::st_transform(roi_sf, 4326)),
+                   error = function(e) NULL)
+    if (is.null(bb) || any(!is.finite(as.numeric(bb)))) return(NULL)
+    sf::st_as_text(sf::st_as_sfc(bb))
+  }
+  
+  # Cache key must include the ROI, or a second ROI gets the first ROI's subset
+  roi_key <- function(roi_sf) {
+    if (is.null(roi_sf) || nrow(roi_sf) == 0) return("all")
+    bb <- tryCatch(sf::st_bbox(sf::st_transform(roi_sf, 4326)),
+                   error = function(e) NULL)
+    if (is.null(bb)) return("all")
+    paste(sprintf("%.6f", as.numeric(bb)), collapse = "_")
+  }
+  
   # ---------------------------
-  # Lazy-load cache for big GeoJSONs
+  # Lazy-load cache (keyed by year + ROI bbox)
   # ---------------------------
   cache <- reactiveValues(
     temporal = list(),
-    v3 = NULL
+    v3 = list()
   )
   
-  get_temporal_layer <- function(year) {
+  get_temporal_layer <- function(year, roi_sf = NULL) {
     y <- as.character(year)
-    if (!is.null(cache$temporal[[y]])) return(cache$temporal[[y]])
+    k <- paste0(y, "@", roi_key(roi_sf))
+    if (!is.null(cache$temporal[[k]])) return(cache$temporal[[k]])
     
     path <- TEMPORAL_FILES[[y]]
     if (is.null(path) || !file.exists(path)) {
@@ -388,30 +411,37 @@ server <- function(input, output, session) {
       return(NULL)
     }
     
-    x <- read_geojson_safe(path)
-    cache$temporal[[y]] <- x
+    x <- read_geojson_safe(path, wkt = roi_wkt_filter(roi_sf))
+    
+    # keep memory bounded across many ROI selections
+    if (length(cache$temporal) > 40) cache$temporal <- list()
+    cache$temporal[[k]] <- x
     x
   }
   
-  get_v3_layer <- function() {
-    if (!is.null(cache$v3)) return(cache$v3)
+  get_v3_layer <- function(roi_sf = NULL) {
+    k <- roi_key(roi_sf)
+    if (!is.null(cache$v3[[k]])) return(cache$v3[[k]])
     if (!file.exists(V3_FILE)) {
       message("V3 file missing: ", V3_FILE)
       return(NULL)
     }
     
-    cache$v3 <- read_geojson_safe(V3_FILE)
-    cache$v3
+    x <- read_geojson_safe(V3_FILE, wkt = roi_wkt_filter(roi_sf))
+    
+    if (length(cache$v3) > 10) cache$v3 <- list()
+    cache$v3[[k]] <- x
+    x
   }
   
   compute_temporal_in_roi <- function(roi_sf, year) {
-    layer <- get_temporal_layer(year)
+    layer <- get_temporal_layer(year, roi_sf)
     if (is.null(layer) || nrow(layer) == 0) return(NULL)
     clip_to_roi(layer, roi_sf)
   }
   
   compute_v3_in_roi <- function(roi_sf) {
-    layer <- get_v3_layer()
+    layer <- get_v3_layer(roi_sf)
     if (is.null(layer) || nrow(layer) == 0) return(list(count = NA_real_, sf = NULL))
     v <- clip_to_roi(layer, roi_sf)
     list(count = nrow(v), sf = v)
