@@ -52,17 +52,17 @@ V3_DIR       <- "Data/V3 Shapefile_large"
 # )
 
 TEMPORAL_FILES <- list(
-  "2016" = file.path(TEMPORAL_DIR, "V1_2016_UMN_Functional_Areas_3_withHeight.geojson"),
-  "2017" = file.path(TEMPORAL_DIR, "V1_2017_UMN_Functional_Areas_3_withHeight.geojson"),
-  "2018" = file.path(TEMPORAL_DIR, "V1_2018_UMN_Functional_Areas_3_withHeight.geojson"),
-  "2019" = file.path(TEMPORAL_DIR, "V1_2019_UMN_Functional_Areas_3_withHeight.geojson"),
-  "2020" = file.path(TEMPORAL_DIR, "V1_2020_UMN_Functional_Areas_3_withHeight.geojson"),
-  "2021" = file.path(TEMPORAL_DIR, "V1_2021_UMN_Functional_Areas_3_withHeight.geojson"),
-  "2022" = file.path(TEMPORAL_DIR, "V1_2022_UMN_Functional_Areas_3_withHeight.geojson"),
-  "2023" = file.path(TEMPORAL_DIR, "V1_2023_UMN_Functional_Areas_3_withHeight.geojson")
+  "2016" = file.path(TEMPORAL_DIR, "V1_2016_UMN_Functional_Areas_3_withHeight.fgb"),
+  "2017" = file.path(TEMPORAL_DIR, "V1_2017_UMN_Functional_Areas_3_withHeight.fgb"),
+  "2018" = file.path(TEMPORAL_DIR, "V1_2018_UMN_Functional_Areas_3_withHeight.fgb"),
+  "2019" = file.path(TEMPORAL_DIR, "V1_2019_UMN_Functional_Areas_3_withHeight.fgb"),
+  "2020" = file.path(TEMPORAL_DIR, "V1_2020_UMN_Functional_Areas_3_withHeight.fgb"),
+  "2021" = file.path(TEMPORAL_DIR, "V1_2021_UMN_Functional_Areas_3_withHeight.fgb"),
+  "2022" = file.path(TEMPORAL_DIR, "V1_2022_UMN_Functional_Areas_3_withHeight.fgb"),
+  "2023" = file.path(TEMPORAL_DIR, "V1_2023_UMN_Functional_Areas_3_withHeight.fgb")
 )
 
-V3_FILE <- file.path(V3_DIR, "V3_2023_UMN_Functional_Areas_3.geojson")
+V3_FILE <- file.path(V3_DIR, "V3_2023_UMN_Functional_Areas_3.fgb")
 
 YEARS <- 2016:2023
 FIRST_YEAR <- 2016
@@ -1100,7 +1100,7 @@ server <- function(input, output, session) {
     years <- ts$year
     b <- ts$building_count
     area_m2 <- ts$total_built_area_m2
-        
+    
     srng <- input$size_range
     v3_count_2023 <- NA_real_
     v3_area_m2_2023 <- NA_real_
@@ -1144,7 +1144,7 @@ server <- function(input, output, session) {
     # ---- colours
     col_count <- "#2C7FB8"
     col_area  <- "#F28E2B"
-        col_v3    <- "#D7263D"
+    col_v3    <- "#D7263D"
     bg_panel  <- "#F8FAFC"
     grid_col  <- "#D9E2EC"
     
