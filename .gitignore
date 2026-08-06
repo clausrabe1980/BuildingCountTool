@@ -35,3 +35,4 @@ Earth Engine Data/
 *.cpg
 *.qmd
 *.rds
+.positai
