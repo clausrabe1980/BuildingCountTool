@@ -71,10 +71,15 @@ LAST_YEAR  <- 2023
 # informational only (your Temporal files already include thr0.5)
 PRES_THRESH <- 0.5
 
+# Projected CRS used for ALL metric calculations (area + distance).
+# UTM 36S (EPSG:32736) is accurate to ~0.03% here. Do NOT use Web Mercator
+# (EPSG:3857): it inflates area by 1/cos^2(lat) ~ 1.33 at this latitude.
+METRIC_CRS <- 32736
+
 # ---- local shapefiles ----
 wards_path <- "Data/Wards/Municipal_Wards_2021.shp"
 
-UMN_function_areas_path <- "Data/Regions/UMN_Functional_Areas_7f.shp"
+UMN_function_areas_path <- "Data/Regions/UMN_Functional_Areas_7d.shp"
 
 # app_dir <- normalizePath(getwd(), winslash = "/")  # if you always run app from its folder
 # wards_path <- file.path(app_dir, "Data/Wards/Municipal_Wards_2021.shp")
@@ -237,7 +242,7 @@ server <- function(input, output, session) {
     g <- sf::st_cast(g, "MULTIPOLYGON", warn = FALSE)
     
     if (is.numeric(simplify_m) && simplify_m > 0) {
-      g_m <- sf::st_transform(g, 3857)
+      g_m <- sf::st_transform(g, METRIC_CRS)
       g_m <- sf::st_simplify(g_m, dTolerance = simplify_m, preserveTopology = TRUE)
       g <- sf::st_transform(g_m, 4326)
     }
@@ -247,7 +252,7 @@ server <- function(input, output, session) {
   
   roi_area_m2_local <- function(roi_sf) {
     if (is.null(roi_sf) || nrow(roi_sf) == 0) return(NA_real_)
-    roi_m <- tryCatch(sf::st_transform(roi_sf, 3857), error = function(e) NULL)
+    roi_m <- tryCatch(sf::st_transform(roi_sf, METRIC_CRS), error = function(e) NULL)
     if (is.null(roi_m)) return(NA_real_)
     as.numeric(sf::st_area(sf::st_union(roi_m)))
   }
@@ -256,7 +261,7 @@ server <- function(input, output, session) {
     if (is.null(sfobj) || nrow(sfobj) == 0) return(sfobj)
     if ("area_m2" %in% names(sfobj)) return(sfobj)
     
-    m <- tryCatch(sf::st_transform(sfobj, 3857), error = function(e) NULL)
+    m <- tryCatch(sf::st_transform(sfobj, METRIC_CRS), error = function(e) NULL)
     if (is.null(m)) {
       sfobj$area_m2 <- NA_real_
       return(sfobj)
